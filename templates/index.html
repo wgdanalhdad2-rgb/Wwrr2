@@ -1,65 +1,51 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ar" dir="rtl">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>منصة الناقل - إعلانات الاستقدام والتنازل</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <meta charset="utf-8">
+  <title>إعلانات الاستقدام</title>
+  <style>
+    body { font-family: Arial; background:#f5f6f8; margin:0; padding:25px; }
+    form, .ad { background:white; padding:16px; border-radius:10px; margin-bottom:12px; }
+    input, select, button { padding:10px; margin:4px; }
+    .ad h3 { margin-top:0; }
+    .meta { color:#666; font-size:14px; }
+    a { color:#0969da; }
+  </style>
 </head>
-<body class="bg-light">
-    <nav class="navbar navbar-dark bg-primary shadow-sm">
-        <div class="container">
-            <a class="navbar-brand fw-bold" href="/"><i class="fa-solid fa-passport"></i> منصة الناقل للخدمات</a>
-            <a href="/admin" class="btn btn-light btn-sm text-primary fw-bold"><i class="fa-solid fa-lock"></i> لوحة التحكم</a>
-        </div>
-    </nav>
+<body>
+  <h1>إعلانات الاستقدام</h1>
 
-    <div class="container my-4">
-        <div class="card shadow-sm p-4 mb-4 bg-white rounded">
-            <form method="GET" action="/" class="row g-3">
-                <div class="col-md-7">
-                    <input type="text" name="q" class="form-control" placeholder="ابحث عن مهنة، جنسية، أو تفاصيل..." value="{{ search }}">
-                </div>
-                <div class="col-md-3">
-                    <select name="cat" class="form-select">
-                        <option value="">جميع الأقسام</option>
-                        <option value="تنازل ونقل كفالة" {% if cat == 'تنازل ونقل كفالة' %}selected{% endif %}>تنازل ونقل كفالة</option>
-                        <option value="استقدام وتأشيرات" {% if cat == 'استقدام وتأشيرات' %}selected{% endif %}>استقدام وتأشيرات</option>
-                    </select>
-                </div>
-                <div class="col-md-2">
-                    <button type="submit" class="btn btn-primary w-100"><i class="fa-solid fa-search"></i> بحث</button>
-                </div>
-            </form>
-        </div>
+  <form method="get">
+    <input name="q" value="{{ search }}" placeholder="ابحث في الإعلانات">
+    <select name="cat">
+      <option value="">كل التصنيفات</option>
+      <option value="عمالة يمنية" {% if cat == 'عمالة يمنية' %}selected{% endif %}>عمالة يمنية</option>
+      <option value="عمالة منزلية" {% if cat == 'عمالة منزلية' %}selected{% endif %}>عمالة منزلية</option>
+      <option value="سائقين" {% if cat == 'سائقين' %}selected{% endif %}>سائقين</option>
+      <option value="تنازل / نقل كفالة" {% if cat == 'تنازل / نقل كفالة' %}selected{% endif %}>تنازل / نقل كفالة</option>
+    </select>
+    <button type="submit">بحث</button>
+  </form>
 
-        <div class="row">
-            {% if ads %}
-                {% for ad in ads %}
-                <div class="col-md-6 mb-3">
-                    <div class="card shadow-sm h-100 border-0">
-                        <div class="card-body">
-                            <span class="badge bg-secondary mb-2">{{ ad.category }}</span>
-                            <h5 class="card-title text-dark fw-bold">{{ ad.title }}</h5>
-                            <p class="card-text text-muted small" style="white-space: pre-line;">{{ ad.content }}</p>
-                            <div class="d-flex justify-content-between align-items-center mt-3">
-                                <span class="text-success fw-bold"><i class="fa-solid fa-phone"></i> {{ ad.phone }}</span>
-                                <a href="{{ ad.whatsapp_link }}" target="_blank" class="btn btn-success btn-sm">
-                                    <i class="fa-brands fa-whatsapp"></i> تواصل واتساب
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                {% endfor %}
-            {% else %}
-                <div class="col-12 text-center py-5">
-                    <div class="alert alert-warning">لا توجد إعلانات مطابقة لبحثك حالياً.</div>
-                </div>
-            {% endif %}
-        </div>
-    </div>
+  {% for ad in ads %}
+  <article class="ad">
+    <h3>{{ ad.title }}</h3>
+    <p>{{ ad.content[:800] }}</p>
+    <p class="meta">
+      التصنيف: {{ ad.category }} |
+      المصدر: <a href="{{ ad.ad_url }}" target="_blank" rel="noopener">فتح الإعلان الأصلي</a>
+    </p>
+
+    {% if ad.phone %}
+      <p>الهاتف: {{ ad.phone[:3] }}******{{ ad.phone[-2:] }}</p>
+    {% endif %}
+
+    {% if ad.whatsapp_link %}
+      <a href="{{ ad.whatsapp_link }}" target="_blank" rel="noopener">واتساب</a>
+    {% endif %}
+  </article>
+  {% else %}
+    <p>لا توجد إعلانات محفوظة بعد.</p>
+  {% endfor %}
 </body>
 </html>
-
