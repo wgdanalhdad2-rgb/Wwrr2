@@ -7,7 +7,6 @@ import re
 import concurrent.futures
 import time
 import random
-from urllib.parse import quote
 
 app = Flask(__name__)
 app.secret_key = "alnaqil_secret_key_2026"
@@ -47,79 +46,71 @@ def extract_phone_and_whatsapp(text: str):
     if not text:
         return "", ""
     
-    normalized_text = normalize_arabic_numbers(text)
-    clean_text = re.sub(r'[\s\-_\.\(\)\/]', '', normalized_text)
+    normalized = normalize_arabic_numbers(text)
+    clean = re.sub(r'[\s\-_\.\(\)\/]', '', normalized)
     
     patterns = [
         r'(?:\+?966|0)?5\d{8}',
         r'\b05\d{8}\b',
-        r'\b5\d{8}\b',
-        r'(?:\+966)?5\d{8}'
+        r'\b5\d{8}\b'
     ]
     
     for pattern in patterns:
-        match = re.search(pattern, clean_text)
+        match = re.search(pattern, clean)
         if match:
             raw = match.group(0)
             if raw.startswith('05'):
-                clean = '966' + raw[1:]
+                clean_num = '966' + raw[1:]
             elif raw.startswith('+966'):
-                clean = raw[1:]
+                clean_num = raw[1:]
             elif raw.startswith('966'):
-                clean = raw
+                clean_num = raw
             elif raw.startswith('5') and len(raw) == 9:
-                clean = '966' + raw
+                clean_num = '966' + raw
             else:
                 continue
             
-            display = '0' + clean[3:]
-            whatsapp_link = f"https://wa.me/{clean}"
-            return display, whatsapp_link
+            display = '0' + clean_num[3:]
+            wa = f"https://wa.me/{clean_num}"
+            return display, wa
     return "", ""
 
 def scrape_source(source):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept-Language": "ar-SA,ar;q=0.9,en;q=0.8",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Referer": "https://www.google.com/",
-        "Connection": "keep-alive"
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://www.google.com/"
     }
     
     ads_found = []
     
     try:
-        response = requests.get(source['url'], headers=headers, timeout=25)
-        if response.status_code != 200:
-            print(f"❌ {source['name']} → Status {response.status_code}")
+        resp = requests.get(source['url'], headers=headers, timeout=25)
+        if resp.status_code != 200:
+            print(f"❌ {source['name']} → {resp.status_code}")
             return ads_found
         
-        soup = BeautifulSoup(response.text, 'html.parser')
+        soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # selectors محسنة لحراج + عامة
         candidates = soup.select(
             'div.post, div.ad, div.listing, article, .card, .item, '
             'div[class*="post"], div[class*="ad"], div[class*="listing"], '
-            'div[class*="offer"], .product, li, tr, section, a[href*="haraj"]'
-        )
+            'li, tr, section'
+        ) or soup.find_all(['div', 'article', 'section', 'li', 'tr'])
         
-        if len(candidates) < 5:
-            candidates = soup.find_all(['div', 'article', 'section', 'li', 'tr'])
-        
-        # كلمات مفتاحية قوية جدًا
+        # كلمات مفتاحية قوية + تركيز على اليمني
         keywords = [
-            'استقدام', 'عاملة', 'سائق', 'مطلوب', 'تأشيرة', 'تأشيرات',
-            'طباخ', 'نقل كفالة', 'تنازل', 'كفالة', 'خادمة', 'مربية',
-            'عمالة منزلية', 'سائق خاص', 'شغالة', 'خادمة منزلية',
-            'نقل خدمات', 'تنازل عن', 'ابغى استقدم', 'اريد استقدام',
-            'عاملات', 'سائقين', 'مربية أطفال', 'طباخة'
+            'استقدام', 'عاملة', 'سائق', 'مطلوب', 'تأشيرة', 'تنازل', 'نقل كفالة',
+            'خادمة', 'مربية', 'شغالة', 'عمالة منزلية', 'سائق خاص',
+            'يمني', 'يمنية', 'من اليمن', 'يمنيين', 'يمنيات',
+            'عامل يمني', 'عاملة يمنية', 'سائق يمني'
         ]
         
         seen = set()
         
         for elem in candidates:
             text = elem.get_text(separator=" ", strip=True)
-            
             if len(text) < 35 or text in seen:
                 continue
             seen.add(text)
@@ -127,38 +118,39 @@ def scrape_source(source):
             if not any(kw in text for kw in keywords):
                 continue
             
-            phone, wa_link = extract_phone_and_whatsapp(text)
+            phone, wa = extract_phone_and_whatsapp(text)
             
-            # استخراج من الروابط إذا لم نجد رقم
             if not phone:
                 for a in elem.find_all('a', href=True):
-                    href = a.get('href', '')
-                    if any(x in href.lower() for x in ['wa.me', 'whatsapp', 'api.whatsapp']):
-                        match = re.search(r'(\d{9,15})', href)
-                        if match:
-                            raw = match.group(1)
-                            if raw.startswith('966') and len(raw) >= 12:
+                    href = a['href']
+                    if 'wa.me' in href or 'whatsapp' in href.lower():
+                        m = re.search(r'(\d{9,15})', href)
+                        if m:
+                            raw = m.group(1)
+                            if raw.startswith('966'):
                                 phone = '0' + raw[3:]
-                                wa_link = f"https://wa.me/{raw}"
+                                wa = f"https://wa.me/{raw}"
                             elif len(raw) == 9 and raw.startswith('5'):
                                 phone = '0' + raw
-                                wa_link = f"https://wa.me/966{raw}"
+                                wa = f"https://wa.me/966{raw}"
                             break
             
             if not phone:
                 continue
             
-            # تصنيف دقيق
-            category = "استقدام / مطلوب"
-            if any(w in text for w in ['تنازل', 'نقل كفالة', 'نقل خدمات', 'للتنازل', 'كفالته']):
+            # تصنيف
+            category = "استقدام عام"
+            if any(w in text for w in ['يمني', 'يمنية', 'من اليمن', 'يمنيين']):
+                category = "عمالة يمنية"
+            elif any(w in text for w in ['تنازل', 'نقل كفالة', 'نقل خدمات']):
                 category = "تنازل / نقل كفالة"
-            elif any(w in text for w in ['سائق', 'سائق خاص', 'سائق منزلي']):
+            elif any(w in text for w in ['سائق']):
                 category = "سائقين"
-            elif any(w in text for w in ['عاملة', 'خادمة', 'مربية', 'طباخ', 'شغالة']):
+            elif any(w in text for w in ['عاملة', 'خادمة', 'مربية', 'شغالة']):
                 category = "عمالة منزلية"
             
-            title = text[:80].replace("\n", " ").strip()
-            if len(text) > 80:
+            title = text[:85].replace("\n", " ").strip()
+            if len(text) > 85:
                 title += "..."
             
             ads_found.append({
@@ -168,59 +160,54 @@ def scrape_source(source):
                 "content": text[:3000],
                 "category": category,
                 "phone": phone,
-                "whatsapp_link": wa_link
+                "whatsapp_link": wa
             })
             
-            if len(ads_found) >= 50:
+            if len(ads_found) >= 60:
                 break
         
         print(f"✅ {source['name']}: {len(ads_found)} إعلان")
         
     except Exception as e:
-        print(f"❌ Error in {source['name']}: {str(e)[:100]}")
+        print(f"❌ {source['name']}: {str(e)[:80]}")
     
-    time.sleep(random.uniform(1.2, 2.8))
+    time.sleep(random.uniform(1.5, 3.0))
     return ads_found
 
 def run_real_scraper():
     setup_database()
     
-    # أهم المصادر - روابط بحث مباشرة من حراج (الأقوى)
     target_sources = [
-        # ========== حراج (الأهم) ==========
-        {"name": "حراج - استقدام عمالة منزلية", "url": "https://haraj.com.sa/search/%D8%A7%D8%B3%D8%AA%D9%82%D8%AF%D8%A7%D9%85%20%D8%B9%D9%85%D8%A7%D9%84%D8%A9%20%D9%85%D9%86%D8%B2%D9%84%D9%8A%D8%A9"},
-        {"name": "حراج - عاملة منزلية", "url": "https://haraj.com.sa/search/%D8%B9%D8%A7%D9%85%D9%84%D8%A9%20%D9%85%D9%86%D8%B2%D9%84%D9%8A%D8%A9"},
-        {"name": "حراج - تنازل عاملة", "url": "https://haraj.com.sa/search/%D8%AA%D9%86%D8%A7%D8%B2%D9%84%20%D8%B9%D8%A7%D9%85%D9%84%D8%A9"},
-        {"name": "حراج - نقل كفالة", "url": "https://haraj.com.sa/search/%D9%86%D9%82%D9%84%20%D9%83%D9%81%D8%A7%D9%84%D8%A9"},
-        {"name": "حراج - سائق خاص", "url": "https://haraj.com.sa/search/%D8%B3%D8%A7%D8%A6%D9%82%20%D8%AE%D8%A7%D8%B5"},
-        {"name": "حراج - مطلوب عاملة", "url": "https://haraj.com.sa/search/%D9%85%D8%B7%D9%84%D9%88%D8%A8%20%D8%B9%D8%A7%D9%85%D9%84%D8%A9"},
+        # ===== حراج - تركيز على اليمني + الاستقدام =====
+        {"name": "حراج - يمني", "url": "https://haraj.com.sa/search/%D9%8A%D9%85%D9%86%D9%8A"},
+        {"name": "حراج - يمنية", "url": "https://haraj.com.sa/search/%D9%8A%D9%85%D9%86%D9%8A%D8%A9"},
+        {"name": "حراج - من اليمن", "url": "https://haraj.com.sa/search/%D9%85%D9%86%20%D8%A7%D9%84%D9%8A%D9%85%D9%86"},
+        {"name": "حراج - عاملة يمنية", "url": "https://haraj.com.sa/search/%D8%B9%D8%A7%D9%85%D9%84%D8%A9%20%D9%8A%D9%85%D9%86%D9%8A%D8%A9"},
+        {"name": "حراج - استقدام يمني", "url": "https://haraj.com.sa/search/%D8%A7%D8%B3%D8%AA%D9%82%D8%AF%D8%A7%D9%85%20%D9%8A%D9%85%D9%86%D9%8A"},
         {"name": "حراج - استقدام", "url": "https://haraj.com.sa/search/%D8%A7%D8%B3%D8%AA%D9%82%D8%AF%D8%A7%D9%85"},
+        {"name": "حراج - عاملة منزلية", "url": "https://haraj.com.sa/search/%D8%B9%D8%A7%D9%85%D9%84%D8%A9%20%D9%85%D9%86%D8%B2%D9%84%D9%8A%D8%A9"},
+        {"name": "حراج - تنازل", "url": "https://haraj.com.sa/search/%D8%AA%D9%86%D8%A7%D8%B2%D9%84"},
+        {"name": "حراج - نقل كفالة", "url": "https://haraj.com.sa/search/%D9%86%D9%82%D9%84%20%D9%83%D9%81%D8%A7%D9%84%D8%A9"},
+        {"name": "حراج - سائق", "url": "https://haraj.com.sa/search/%D8%B3%D8%A7%D8%A6%D9%82"},
         
-        # ========== دوبيزل ==========
+        # مصادر إضافية
         {"name": "دوبيزل السعودية", "url": "https://saudi.dubizzle.com/"},
-        {"name": "دوبيزل - خدمات", "url": "https://saudi.dubizzle.com/services/"},
-        
-        # ========== OpenSooq ==========
-        {"name": "السوق المفتوح - السعودية", "url": "https://sa.opensooq.com/"},
-        
-        # ========== مكاتب (عروض + أرقام) ==========
+        {"name": "السوق المفتوح", "url": "https://sa.opensooq.com/"},
         {"name": "الإسناد السريع", "url": "https://qsr.sa/"},
         {"name": "الدار السعودية", "url": "https://www.darsaudia.com/"},
-        {"name": "ساعد للاستقدام", "url": "https://www.saaid.online/"},
-        {"name": "أيادي", "url": "https://ayady.sa/"},
     ]
     
     all_ads = []
-    print("🚀 بدء السحب من أهم المنصات السعودية...\n")
+    print("🚀 بدء سحب إعلانات استقدام العمالة اليمنية + العامة...\n")
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         results = list(executor.map(scrape_source, target_sources))
-        for result in results:
-            all_ads.extend(result)
+        for r in results:
+            all_ads.extend(r)
     
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    added_count = 0
+    added = 0
     
     for ad in all_ads:
         try:
@@ -228,46 +215,42 @@ def run_real_scraper():
                 INSERT OR IGNORE INTO ads 
                 (source_name, source_url, title, content, category, phone, whatsapp_link)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                ad['source_name'], ad['source_url'], ad['title'],
-                ad['content'], ad['category'], ad['phone'], ad['whatsapp_link']
-            ))
+            ''', (ad['source_name'], ad['source_url'], ad['title'],
+                  ad['content'], ad['category'], ad['phone'], ad['whatsapp_link']))
             if cursor.rowcount > 0:
-                added_count += 1
+                added += 1
         except:
             pass
     
     conn.commit()
     conn.close()
     
-    print(f"\n✅ تم إضافة {added_count} إعلان جديد من أصل {len(all_ads)} تم العثور عليها")
-    return added_count
+    print(f"\n✅ تم إضافة {added} إعلان جديد")
+    return added
 
 @app.route('/')
 def index():
     setup_database()
     conn = get_db_connection()
     
-    search_query = request.args.get('q', '').strip()
-    category_filter = request.args.get('cat', '').strip()
+    q = request.args.get('q', '').strip()
+    cat = request.args.get('cat', '').strip()
     
     query = "SELECT * FROM ads WHERE 1=1"
     params = []
     
-    if search_query:
+    if q:
         query += " AND (content LIKE ? OR title LIKE ? OR phone LIKE ? OR category LIKE ?)"
-        params.extend([f"%{search_query}%"] * 4)
-    
-    if category_filter:
+        params.extend([f"%{q}%"] * 4)
+    if cat:
         query += " AND category = ?"
-        params.append(category_filter)
-        
-    query += " ORDER BY id DESC LIMIT 200"
+        params.append(cat)
     
+    query += " ORDER BY id DESC LIMIT 250"
     ads = conn.execute(query, params).fetchall()
     conn.close()
     
-    return render_template('index.html', ads=ads, search=search_query, cat=category_filter)
+    return render_template('index.html', ads=ads, search=q, cat=cat)
 
 @app.route('/admin', methods=['GET', 'POST'])
 def admin():
@@ -275,29 +258,25 @@ def admin():
     
     if request.method == 'POST':
         action = request.form.get('action')
-        
         if action == 'scrape':
             count = run_real_scraper()
-            flash(f'🚀 تم السحب بنجاح! الإعلانات الجديدة: {count}', 'success')
-        
+            flash(f'تم السحب بنجاح! الإعلانات الجديدة: {count}', 'success')
         elif action == 'clear':
             conn = get_db_connection()
             conn.execute('DELETE FROM ads')
             conn.commit()
             conn.close()
-            flash('🗑️ تم تفريغ قاعدة البيانات.', 'warning')
-        
+            flash('تم تفريغ قاعدة البيانات', 'warning')
         return redirect(url_for('admin'))
-        
+    
     conn = get_db_connection()
     ads = conn.execute("SELECT * FROM ads ORDER BY id DESC").fetchall()
     total = len(ads)
     conn.close()
-    
     return render_template('admin.html', ads=ads, total=total)
 
 if __name__ == '__main__':
     setup_database()
     port = int(os.environ.get("PORT", 5000))
-    print(f"🌐 السيرفر شغال على: http://127.0.0.1:{port}")
+    print(f"السيرفر شغال: http://127.0.0.1:{port}")
     app.run(host='0.0.0.0', port=port, debug=True)
