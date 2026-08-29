@@ -11,7 +11,6 @@ app.secret_key = "alnaqil_secret_key_2026"
 DB_NAME = "recruitment.db"
 
 def setup_database():
-    """إنشاء قاعدة البيانات والجداول إذا لم تكن موجودة"""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute('''
@@ -77,18 +76,18 @@ def scrape_source(source):
         if response.status_code != 200:
             return ads_found
         soup = BeautifulSoup(response.text, 'html.parser')
-        elements = soup.find_all(['div', 'article', 'section', 'li', 'tr'])
+        elements = soup.find_all(['div', 'article', 'section', 'li', 'tr', 'a'])
         for elem in elements:
             text = elem.get_text(separator=" ").strip()
             if len(text) < 30:
                 continue
-            keywords = ['تنازل', 'استقدام', 'نقل كفالة', 'عاملة', 'خادمة', 'سائق', 'طباخ', 'شغالة', 'كفيل']
+            keywords = ['استقدام', 'وظائف', 'عاملة', 'سائق', 'مطلوب', 'تأشيرات', 'طباخ', 'نقل كفالة']
             if not any(kw in text for kw in keywords):
                 continue
             phone, wa_link = extract_phone_and_whatsapp(text)
             if not phone:
                 continue
-            category = "تنازل ونقل كفالة" if any(k in text for k in ['تنازل', 'نقل']) else "استقدام وتأشيرات"
+            category = "استقدام وتأشيرات"
             title = text[:60].replace("\n", " ").strip() + "..."
             ads_found.append({
                 "source_name": source['name'],
@@ -105,16 +104,14 @@ def scrape_source(source):
 
 def run_real_scraper():
     setup_database()
-    # قائمة شاملة للمصادر والمواقع السعودية المتخصصة
+    # المصادر المطابقة للمواقع المفتوحة من قائمتك
     target_sources = [
-        {"name": "حراج (استقدام)", "url": "https://haraj.com.sa/tags/%D8%A7%D8%B3%D8%AA%D9%82%D8%AF%D8%A7%D9%85"},
-        {"name": "حراج (تنازل)", "url": "https://haraj.com.sa/tags/%D8%AA%D9%86%D8%A7%D8%B2%D9%84"},
-        {"name": "حراج (سائق خاص)", "url": "https://haraj.com.sa/tags/%D8%B3%D8%A7%D8%A6%D9%82%20%D8%AE%D8%A7%D8%B5"},
-        {"name": "السوق المفتوح (استقدام)", "url": "https://sa.opensooq.com/ar/%D8%AE%D8%AF%D9%85%D8%A7%D8%AA/%D8%AE%D8%AF%D9%85%D8%A7%D8%AA-%D8%A7%D8%B3%D8%AA%D9%82%D8%AF%D8%A7%D9%85"}
+        {"name": "موقع وظيفة.كوم", "url": "https://www.wadheefa.com/"},
+        {"name": "دوبيزل السعودية", "url": "https://saudi.dubizzle.com/"}
     ]
     
     all_ads = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         results = executor.map(scrape_source, target_sources)
         for result in results:
             all_ads.extend(result)
@@ -164,25 +161,7 @@ def admin():
         action = request.form.get('action')
         if action == 'scrape':
             count = run_real_scraper()
-            flash(f'🚀 تم تشغيل السحب بنجاح! تم العثور على وإضافة {count} إعلان حقيقي جديد.', 'success')
-        elif action == 'add':
-            title = request.form.get('title')
-            content = request.form.get('content')
-            category = request.form.get('category')
-            phone = request.form.get('phone')
-            clean_phone = phone.strip().replace(' ', '').replace('+', '')
-            wa_num = '966' + clean_phone[1:] if clean_phone.startswith('05') else clean_phone
-            wa_link = f"https://wa.me/{wa_num}"
-            
-            conn = get_db_connection()
-            try:
-                conn.execute('INSERT INTO ads (source_name, title, content, category, phone, whatsapp_link) VALUES ("إضافة يدوية", ?, ?, ?, ?, ?)', 
-                             (title, content, category, phone, wa_link))
-                conn.commit()
-                flash('✅ تم إضافة الإعلان يدوياً بنجاح!', 'success')
-            except Exception as e:
-                flash(f'❌ خطأ: {e}', 'error')
-            conn.close()
+            flash(f'🚀 تم مزامنة وسحب الإعلانات من مصادر القائمة بنجاح! الإعلانات الجديدة المضافة: {count}', 'success')
         elif action == 'clear':
             conn = get_db_connection()
             conn.execute('DELETE FROM ads')
