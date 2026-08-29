@@ -42,21 +42,19 @@ def extract_phone_and_whatsapp(text: str):
     if not text:
         return "", ""
     
-    # توحيد الأرقام وإزالة الفواصل والرموز غير الضرورية
     normalized_text = normalize_arabic_numbers(text)
     clean_text = re.sub(r'[\s\-_\.\(\)]', '', normalized_text)
     
     # صيغ الهواتف السعودية: تبدأ بـ 05 أو 9665 أو +9665 أو 5
     patterns = [
-        r'(?:\+?966|0)?5\d{8}',  # 05xxxxxxxx أو 9665xxxxxxxx
-        r'\b5\d{8}\b'            # 5xxxxxxxx
+        r'(?:\+?966|0)?5\d{8}',  
+        r'\b5\d{8}\b'            
     ]
     
     for pattern in patterns:
         match = re.search(pattern, clean_text)
         if match:
             raw = match.group(0)
-            # تنظيف الرقم وتحويله إلى الصيغة الدولية للواتساب (9665xxxxxxxx)
             if raw.startswith('05'):
                 clean = '966' + raw[1:]
             elif raw.startswith('+966'):
@@ -88,29 +86,22 @@ def scrape_source(source):
             return ads_found
             
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # البحث عن العناصر التي قد تحتوي على الإعلانات بناءً على وسوم شائعة
         elements = soup.find_all(['div', 'article', 'section', 'li', 'tr'])
         
         for elem in elements:
             text = elem.get_text(separator=" ").strip()
-            # تصفية النصوص القصيرة جداً لتجنب البيانات العشوائية
             if len(text) < 30:
                 continue
                 
-            # الكلمات المفتاحية المستهدفة في سوق الاستقدام والتنازل السعودي
             keywords = ['تنازل', 'استقدام', 'نقل كفالة', 'عاملة', 'خادمة', 'سائق', 'طباخ', 'شغالة', 'كفيل']
             if not any(kw in text for kw in keywords):
                 continue
                 
             phone, wa_link = extract_phone_and_whatsapp(text)
             if not phone:
-                continue # تخطي الإعلانات التي لا تحتوي على وسيلة اتصال
+                continue 
                 
-            # تحديد القسم تلقائياً
             category = "تنازل ونقل كفالة" if any(k in text for k in ['تنازل', 'نقل']) else "استقدام وتأشيرات"
-            
-            # صياغة عنوان مناسب للإعلان
             title = text[:60].replace("\n", " ").strip() + "..."
             
             ads_found.append({
@@ -123,7 +114,6 @@ def scrape_source(source):
                 "whatsapp_link": wa_link
             })
     except Exception as e:
-        # يمكن تفعيل طباعة الأخطاء لأغراض التنقيب والتطوير
         pass
         
     return ads_found
@@ -175,7 +165,6 @@ def run_scraper():
     """المحرك الرئيسي لعملية السحب والمعالجة"""
     setup_database()
     
-    # مصادر حقيقية ومستهدفة لإعلانات الخدمات والاستقدام في السعودية (يمكن إضافة المزيد)
     target_sources = [
         {
             "name": "موقع حراج (الاستقدام)",
@@ -194,16 +183,13 @@ def run_scraper():
     print("🚀 بدء تشغيل نظام سحب إعلانات الاستقدام والتنازل...")
     
     all_ads = []
-    # استخدام الخيوط المتعددة (Multithreading) لتسريع عملية السحب من المصادر المختلفة
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         results = executor.map(scrape_source, target_sources)
         for result in results:
             all_ads.extend(result)
             
-    # في حال لم يتم العثور على بيانات حية بسبب قيود الحماية (Cloudflare) للمواقع المستهدفة،
-    # نقوم بإدراج عينات محاكاة ذكية لضمان عمل البرنامج بالكامل وبشكل فوري أمام المستخدم.
     if not all_ads:
-        print("ℹ️ لم يتم سحب بيانات جديدة من الروابط المباشرة (قد يتطلب ذلك بروكيسات متقدمة لتخطي الحماية).")
+        print("ℹ️ لم يتم سحب بيانات جديدة من الروابط المباشرة (بسبب قيود الحماية).")
         print("💡 سيتم توليد عينات إعلانات محاكاة واقعية لتجربة النظام بالكامل...")
         all_ads = [
             {
@@ -237,10 +223,8 @@ def run_scraper():
         
     added_count = save_ads_to_db(all_ads)
     print(f"✅ تم فحص المصادر بنجاح. الإعلانات الجديدة المضافة: {added_count}")
-    
-    # عرض النتائج المخزنة في قاعدة البيانات
     display_saved_ads()
 
 if __name__ == "__main__":
     run_scraper()
-`
+
