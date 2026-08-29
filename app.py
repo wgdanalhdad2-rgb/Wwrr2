@@ -1,282 +1,516 @@
-from flask import Flask, render_template, request, redirect, url_for, flash
-import sqlite3
 import os
+import re
+import json
+import time
+import hashlib
+import sqlite3
+import logging
+import threading
+from datetime import datetime, timezone
+from urllib.parse import urljoin, urlparse
+from urllib.robotparser import RobotFileParser
+
 import requests
 from bs4 import BeautifulSoup
-import re
-import concurrent.futures
-import time
-import random
+from flask import Flask, render_template, request, redirect, url_for, flash
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+DB_NAME = os.getenv("DB_NAME", "recruitment.db")
+SECRET_KEY = os.getenv("SECRET_KEY", os.urandom(32).hex())
+REQUEST_TIMEOUT = (8, 25)
+MAX_ADS_PER_SOURCE = 100
+MIN_SECONDS_BETWEEN_REQUESTS = 2.0
 
 app = Flask(__name__)
-app.secret_key = "alnaqil_secret_key_2026"
-DB_NAME = "recruitment.db"
+app.secret_key = SECRET_KEY
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+logger = logging.getLogger("recruitment")
+
+scrape_lock = threading.Lock()
+last_request_at = {}
+
+
+# أضف فقط API / RSS / صفحات عامة يسمح موقعها بالوصول الآلي إليها.
+# لا تضف صفحات تسجيل الدخول، صفحات مساند المحمية، أو مصادر تمنع الجمع الآلي.
+SOURCES = [
+    {
+        "id": "your_authorized_json_api",
+        "name": "مصدر API مصرح",
+        "type": "json",
+        "enabled": False,
+        "url": "https://example.com/api/public-ads",
+        "items_path": "data.items",
+        "fields": {
+            "title": "title",
+            "content": "description",
+            "url": "url",
+            "phone": "phone",
+            "published_at": "created_at"
+        }
+    },
+    {
+        "id": "your_authorized_rss",
+        "name": "مصدر RSS مصرح",
+        "type": "rss",
+        "enabled": False,
+        "url": "https://example.com/feed.xml"
+    },
+    {
+        "id": "your_permitted_html",
+        "name": "موقع عام يسمح بالسحب",
+        "type": "html",
+        "enabled": False,
+        "url": "https://example.com/ads",
+        "selectors": {
+            "card": "article.ad-card",
+            "title": "h2",
+            "content": ".description",
+            "link": "a.details"
+        }
+    }
+]
+
 
 def setup_database():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute('''
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.executescript("""
+        PRAGMA journal_mode=WAL;
+
         CREATE TABLE IF NOT EXISTS ads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_name TEXT,
-            source_url TEXT,
-            title TEXT,
-            content TEXT,
-            category TEXT,
+            source_id TEXT NOT NULL,
+            source_name TEXT NOT NULL,
+            source_url TEXT NOT NULL,
+            ad_url TEXT,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            category TEXT NOT NULL,
             phone TEXT,
             whatsapp_link TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(content)
-        )
-    ''')
-    conn.commit()
-    conn.close()
+            fingerprint TEXT NOT NULL UNIQUE,
+            published_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
 
-def get_db_connection():
+        CREATE INDEX IF NOT EXISTS idx_ads_created_at ON ads(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_ads_category ON ads(category);
+        CREATE INDEX IF NOT EXISTS idx_ads_source_id ON ads(source_id);
+
+        CREATE TABLE IF NOT EXISTS source_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id TEXT NOT NULL,
+            source_name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            found_count INTEGER NOT NULL DEFAULT 0,
+            inserted_count INTEGER NOT NULL DEFAULT 0,
+            message TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT
+        );
+        """)
+
+
+def get_db():
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     return conn
 
-def normalize_arabic_numbers(text: str) -> str:
-    arabic_digits = "٠١٢٣٤٥٦٧٨٩"
-    english_digits = "0123456789"
-    return text.translate(str.maketrans(arabic_digits, english_digits))
 
-def extract_phone_and_whatsapp(text: str):
-    if not text:
-        return "", ""
-    
-    normalized = normalize_arabic_numbers(text)
-    clean = re.sub(r'[\s\-_\.\(\)\/]', '', normalized)
-    
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def make_session():
+    retry = Retry(
+        total=3,
+        backoff_factor=1.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset(["GET"]),
+        raise_on_status=False
+    )
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "RecruitmentAggregator/1.0 (+contact@example.com)",
+        "Accept-Language": "ar,en;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml,application/json;q=0.9,*/*;q=0.8"
+    })
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    session.mount("http://", HTTPAdapter(max_retries=retry))
+    return session
+
+
+def wait_for_rate_limit(url):
+    domain = urlparse(url).netloc.lower()
+    elapsed = time.monotonic() - last_request_at.get(domain, 0)
+    if elapsed < MIN_SECONDS_BETWEEN_REQUESTS:
+        time.sleep(MIN_SECONDS_BETWEEN_REQUESTS - elapsed)
+    last_request_at[domain] = time.monotonic()
+
+
+def can_fetch(url, user_agent="RecruitmentAggregator"):
+    parsed = urlparse(url)
+    robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+    rp = RobotFileParser()
+    rp.set_url(robots_url)
+
+    try:
+        rp.read()
+        return rp.can_fetch(user_agent, url)
+    except Exception:
+        # عند عدم توفر robots.txt لا نفترض السماح لمصادر HTML.
+        return False
+
+
+def normalize_arabic_numbers(text):
+    return (text or "").translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+
+
+def extract_phone_and_whatsapp(text, links=None):
+    text = normalize_arabic_numbers(text)
+    compact = re.sub(r"[^d+]", "", text)
+
     patterns = [
-        r'(?:\+?966|0)?5\d{8}',
-        r'\b05\d{8}\b',
-        r'\b5\d{8}\b'
+        r"(?:+966|00966|966|0)?5d{8}",
+        r"\b5d{8}\b"
     ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, clean)
-        if match:
-            raw = match.group(0)
-            if raw.startswith('05'):
-                clean_num = '966' + raw[1:]
-            elif raw.startswith('+966'):
-                clean_num = raw[1:]
-            elif raw.startswith('966'):
-                clean_num = raw
-            elif raw.startswith('5') and len(raw) == 9:
-                clean_num = '966' + raw
-            else:
-                continue
-            
-            display = '0' + clean_num[3:]
-            wa = f"https://wa.me/{clean_num}"
-            return display, wa
+
+    candidates = [compact]
+    candidates.extend(links or [])
+
+    for value in candidates:
+        value = normalize_arabic_numbers(value)
+        match = None
+
+        for pattern in patterns:
+            match = re.search(pattern, value)
+            if match:
+                break
+
+        if not match:
+            continue
+
+        raw = match.group(0).replace("+", "")
+        if raw.startswith("00966"):
+            raw = raw[2:]
+        elif raw.startswith("0") and len(raw) == 10:
+            raw = "966" + raw[1:]
+        elif raw.startswith("5") and len(raw) == 9:
+            raw = "966" + raw
+
+        if raw.startswith("9665") and len(raw) == 12:
+            return "0" + raw[3:], f"https://wa.me/{raw}"
+
     return "", ""
 
-def scrape_source(source):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept-Language": "ar-SA,ar;q=0.9,en;q=0.8",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": "https://www.google.com/"
-    }
-    
-    ads_found = []
-    
-    try:
-        resp = requests.get(source['url'], headers=headers, timeout=25)
-        if resp.status_code != 200:
-            print(f"❌ {source['name']} → {resp.status_code}")
-            return ads_found
-        
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        
-        candidates = soup.select(
-            'div.post, div.ad, div.listing, article, .card, .item, '
-            'div[class*="post"], div[class*="ad"], div[class*="listing"], '
-            'li, tr, section'
-        ) or soup.find_all(['div', 'article', 'section', 'li', 'tr'])
-        
-        # كلمات مفتاحية قوية + تركيز على اليمني
-        keywords = [
-            'استقدام', 'عاملة', 'سائق', 'مطلوب', 'تأشيرة', 'تنازل', 'نقل كفالة',
-            'خادمة', 'مربية', 'شغالة', 'عمالة منزلية', 'سائق خاص',
-            'يمني', 'يمنية', 'من اليمن', 'يمنيين', 'يمنيات',
-            'عامل يمني', 'عاملة يمنية', 'سائق يمني'
-        ]
-        
-        seen = set()
-        
-        for elem in candidates:
-            text = elem.get_text(separator=" ", strip=True)
-            if len(text) < 35 or text in seen:
-                continue
-            seen.add(text)
-            
-            if not any(kw in text for kw in keywords):
-                continue
-            
-            phone, wa = extract_phone_and_whatsapp(text)
-            
-            if not phone:
-                for a in elem.find_all('a', href=True):
-                    href = a['href']
-                    if 'wa.me' in href or 'whatsapp' in href.lower():
-                        m = re.search(r'(\d{9,15})', href)
-                        if m:
-                            raw = m.group(1)
-                            if raw.startswith('966'):
-                                phone = '0' + raw[3:]
-                                wa = f"https://wa.me/{raw}"
-                            elif len(raw) == 9 and raw.startswith('5'):
-                                phone = '0' + raw
-                                wa = f"https://wa.me/966{raw}"
-                            break
-            
-            if not phone:
-                continue
-            
-            # تصنيف
-            category = "استقدام عام"
-            if any(w in text for w in ['يمني', 'يمنية', 'من اليمن', 'يمنيين']):
-                category = "عمالة يمنية"
-            elif any(w in text for w in ['تنازل', 'نقل كفالة', 'نقل خدمات']):
-                category = "تنازل / نقل كفالة"
-            elif any(w in text for w in ['سائق']):
-                category = "سائقين"
-            elif any(w in text for w in ['عاملة', 'خادمة', 'مربية', 'شغالة']):
-                category = "عمالة منزلية"
-            
-            title = text[:85].replace("\n", " ").strip()
-            if len(text) > 85:
-                title += "..."
-            
-            ads_found.append({
-                "source_name": source['name'],
-                "source_url": source['url'],
-                "title": title,
-                "content": text[:3000],
-                "category": category,
-                "phone": phone,
-                "whatsapp_link": wa
-            })
-            
-            if len(ads_found) >= 60:
-                break
-        
-        print(f"✅ {source['name']}: {len(ads_found)} إعلان")
-        
-    except Exception as e:
-        print(f"❌ {source['name']}: {str(e)[:80]}")
-    
-    time.sleep(random.uniform(1.5, 3.0))
-    return ads_found
 
-def run_real_scraper():
-    setup_database()
-    
-    target_sources = [
-        # ===== حراج - تركيز على اليمني + الاستقدام =====
-        {"name": "حراج - يمني", "url": "https://haraj.com.sa/search/%D9%8A%D9%85%D9%86%D9%8A"},
-        {"name": "حراج - يمنية", "url": "https://haraj.com.sa/search/%D9%8A%D9%85%D9%86%D9%8A%D8%A9"},
-        {"name": "حراج - من اليمن", "url": "https://haraj.com.sa/search/%D9%85%D9%86%20%D8%A7%D9%84%D9%8A%D9%85%D9%86"},
-        {"name": "حراج - عاملة يمنية", "url": "https://haraj.com.sa/search/%D8%B9%D8%A7%D9%85%D9%84%D8%A9%20%D9%8A%D9%85%D9%86%D9%8A%D8%A9"},
-        {"name": "حراج - استقدام يمني", "url": "https://haraj.com.sa/search/%D8%A7%D8%B3%D8%AA%D9%82%D8%AF%D8%A7%D9%85%20%D9%8A%D9%85%D9%86%D9%8A"},
-        {"name": "حراج - استقدام", "url": "https://haraj.com.sa/search/%D8%A7%D8%B3%D8%AA%D9%82%D8%AF%D8%A7%D9%85"},
-        {"name": "حراج - عاملة منزلية", "url": "https://haraj.com.sa/search/%D8%B9%D8%A7%D9%85%D9%84%D8%A9%20%D9%85%D9%86%D8%B2%D9%84%D9%8A%D8%A9"},
-        {"name": "حراج - تنازل", "url": "https://haraj.com.sa/search/%D8%AA%D9%86%D8%A7%D8%B2%D9%84"},
-        {"name": "حراج - نقل كفالة", "url": "https://haraj.com.sa/search/%D9%86%D9%82%D9%84%20%D9%83%D9%81%D8%A7%D9%84%D8%A9"},
-        {"name": "حراج - سائق", "url": "https://haraj.com.sa/search/%D8%B3%D8%A7%D8%A6%D9%82"},
-        
-        # مصادر إضافية
-        {"name": "دوبيزل السعودية", "url": "https://saudi.dubizzle.com/"},
-        {"name": "السوق المفتوح", "url": "https://sa.opensooq.com/"},
-        {"name": "الإسناد السريع", "url": "https://qsr.sa/"},
-        {"name": "الدار السعودية", "url": "https://www.darsaudia.com/"},
+def detect_category(text):
+    text = text or ""
+
+    if any(x in text for x in ["تنازل", "نقل كفالة", "نقل خدمات"]):
+        return "تنازل / نقل كفالة"
+    if any(x in text for x in ["سائق", "سواق"]):
+        return "سائقين"
+    if any(x in text for x in ["عاملة", "خادمة", "مربية", "شغالة", "عمالة منزلية"]):
+        return "عمالة منزلية"
+    if any(x in text for x in ["يمني", "يمنية", "من اليمن", "يمنيين", "يمنيات"]):
+        return "عمالة يمنية"
+
+    return "استقدام عام"
+
+
+def is_relevant(text):
+    keywords = [
+        "استقدام", "عاملة", "سائق", "مطلوب", "تأشيرة",
+        "تنازل", "نقل كفالة", "خادمة", "مربية",
+        "شغالة", "عمالة منزلية", "سائق خاص",
+        "يمني", "يمنية", "من اليمن"
     ]
-    
-    all_ads = []
-    print("🚀 بدء سحب إعلانات استقدام العمالة اليمنية + العامة...\n")
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        results = list(executor.map(scrape_source, target_sources))
-        for r in results:
-            all_ads.extend(r)
-    
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    added = 0
-    
-    for ad in all_ads:
-        try:
-            cursor.execute('''
-                INSERT OR IGNORE INTO ads 
-                (source_name, source_url, title, content, category, phone, whatsapp_link)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (ad['source_name'], ad['source_url'], ad['title'],
-                  ad['content'], ad['category'], ad['phone'], ad['whatsapp_link']))
-            if cursor.rowcount > 0:
-                added += 1
-        except:
-            pass
-    
-    conn.commit()
-    conn.close()
-    
-    print(f"\n✅ تم إضافة {added} إعلان جديد")
-    return added
+    return any(word in (text or "") for word in keywords)
 
-@app.route('/')
+
+def fingerprint(ad):
+    raw = "|".join([
+        ad["source_id"],
+        re.sub(r"s+", " ", ad["title"]).strip().lower(),
+        re.sub(r"s+", " ", ad["content"]).strip().lower()[:1200],
+        ad.get("phone", "")
+    ])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def clean_ad(source, title, content, ad_url="", phone="", published_at=""):
+    title = re.sub(r"s+", " ", title or "").strip()[:250]
+    content = re.sub(r"s+", " ", content or "").strip()[:5000]
+
+    if len(content) < 35 or not is_relevant(f"{title} {content}"):
+        return None
+
+    found_phone, whatsapp = extract_phone_and_whatsapp(f"{title} {content} {phone}")
+    if phone and not found_phone:
+        found_phone, whatsapp = extract_phone_and_whatsapp(phone)
+
+    ad = {
+        "source_id": source["id"],
+        "source_name": source["name"],
+        "source_url": source["url"],
+        "ad_url": ad_url or source["url"],
+        "title": title or content[:100],
+        "content": content,
+        "category": detect_category(f"{title} {content}"),
+        "phone": found_phone,
+        "whatsapp_link": whatsapp,
+        "published_at": published_at or ""
+    }
+    ad["fingerprint"] = fingerprint(ad)
+    return ad
+
+
+def get_nested(data, path, default=None):
+    value = data
+    for key in (path or "").split("."):
+        if not key:
+            continue
+        if not isinstance(value, dict):
+            return default
+        value = value.get(key, default)
+    return value
+
+
+def scrape_json(source, session):
+    wait_for_rate_limit(source["url"])
+    response = session.get(source["url"], timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+
+    payload = response.json()
+    items = get_nested(payload, source.get("items_path"), [])
+
+    if not isinstance(items, list):
+        raise ValueError("مسار items_path لا يشير إلى قائمة JSON")
+
+    fields = source["fields"]
+    ads = []
+
+    for item in items[:MAX_ADS_PER_SOURCE]:
+        if not isinstance(item, dict):
+            continue
+
+        ad = clean_ad(
+            source=source,
+            title=str(get_nested(item, fields.get("title"), "") or ""),
+            content=str(get_nested(item, fields.get("content"), "") or ""),
+            ad_url=str(get_nested(item, fields.get("url"), "") or ""),
+            phone=str(get_nested(item, fields.get("phone"), "") or ""),
+            published_at=str(get_nested(item, fields.get("published_at"), "") or "")
+        )
+        if ad:
+            ads.append(ad)
+
+    return ads
+
+
+def scrape_rss(source, session):
+    wait_for_rate_limit(source["url"])
+    response = session.get(source["url"], timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.content, "xml")
+    entries = soup.find_all(["item", "entry"])
+    ads = []
+
+    for entry in entries[:MAX_ADS_PER_SOURCE]:
+        title = entry.find("title")
+        description = entry.find("description") or entry.find("summary") or entry.find("content")
+        link = entry.find("link")
+        published = entry.find("pubDate") or entry.find("published") or entry.find("updated")
+
+        link_value = ""
+        if link:
+            link_value = link.get("href") or link.get_text(" ", strip=True)
+
+        ad = clean_ad(
+            source,
+            title.get_text(" ", strip=True) if title else "",
+            description.get_text(" ", strip=True) if description else "",
+            link_value,
+            published_at=published.get_text(" ", strip=True) if published else ""
+        )
+        if ad:
+            ads.append(ad)
+
+    return ads
+
+
+def scrape_html(source, session):
+    if not can_fetch(source["url"]):
+        raise PermissionError("robots.txt لا يسمح بجمع هذه الصفحة آلياً")
+
+    wait_for_rate_limit(source["url"])
+    response = session.get(source["url"], timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    selectors = source["selectors"]
+    cards = soup.select(selectors["card"])
+    ads = []
+
+    for card in cards[:MAX_ADS_PER_SOURCE]:
+        title_el = card.select_one(selectors.get("title", ""))
+        content_el = card.select_one(selectors.get("content", ""))
+        link_el = card.select_one(selectors.get("link", "a[href]"))
+
+        title = title_el.get_text(" ", strip=True) if title_el else ""
+        content = content_el.get_text(" ", strip=True) if content_el else card.get_text(" ", strip=True)
+        href = urljoin(source["url"], link_el["href"]) if link_el and link_el.get("href") else source["url"]
+
+        links = [a.get("href", "") for a in card.select("a[href]")]
+        phone, _ = extract_phone_and_whatsapp(content, links)
+
+        ad = clean_ad(source, title, content, href, phone)
+        if ad:
+            ads.append(ad)
+
+    return ads
+
+
+def save_ads(ads):
+    inserted = 0
+    with get_db() as conn:
+        for ad in ads:
+            cursor = conn.execute("""
+                INSERT OR IGNORE INTO ads (
+                    source_id, source_name, source_url, ad_url, title,
+                    content, category, phone, whatsapp_link, fingerprint, published_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                ad["source_id"], ad["source_name"], ad["source_url"], ad["ad_url"],
+                ad["title"], ad["content"], ad["category"], ad["phone"],
+                ad["whatsapp_link"], ad["fingerprint"], ad["published_at"]
+            ))
+            inserted += cursor.rowcount
+    return inserted
+
+
+def record_run(source, status, found=0, inserted=0, message=""):
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO source_runs (
+                source_id, source_name, status, found_count,
+                inserted_count, message, started_at, finished_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            source["id"], source["name"], status, found, inserted,
+            message[:1000], utc_now(), utc_now()
+        ))
+
+
+def scrape_one_source(source):
+    session = make_session()
+
+    try:
+        if source["type"] == "json":
+            ads = scrape_json(source, session)
+        elif source["type"] == "rss":
+            ads = scrape_rss(source, session)
+        elif source["type"] == "html":
+            ads = scrape_html(source, session)
+        else:
+            raise ValueError(f"نوع مصدر غير مدعوم: {source['type']}")
+
+        inserted = save_ads(ads)
+        record_run(source, "success", len(ads), inserted)
+        logger.info("%s: found=%s inserted=%s", source["name"], len(ads), inserted)
+        return inserted
+
+    except Exception as exc:
+        record_run(source, "failed", message=str(exc))
+        logger.warning("%s failed: %s", source["name"], exc)
+        return 0
+
+
+def run_scraper():
+    if not scrape_lock.acquire(blocking=False):
+        logger.warning("Scraper is already running")
+        return
+
+    try:
+        total = 0
+        for source in SOURCES:
+            if source.get("enabled"):
+                total += scrape_one_source(source)
+
+        logger.info("Scraper completed: %s new ads", total)
+    finally:
+        scrape_lock.release()
+
+
+@app.route("/")
 def index():
     setup_database()
-    conn = get_db_connection()
-    
-    q = request.args.get('q', '').strip()
-    cat = request.args.get('cat', '').strip()
-    
-    query = "SELECT * FROM ads WHERE 1=1"
-    params = []
-    
-    if q:
-        query += " AND (content LIKE ? OR title LIKE ? OR phone LIKE ? OR category LIKE ?)"
-        params.extend([f"%{q}%"] * 4)
-    if cat:
-        query += " AND category = ?"
-        params.append(cat)
-    
-    query += " ORDER BY id DESC LIMIT 250"
-    ads = conn.execute(query, params).fetchall()
-    conn.close()
-    
-    return render_template('index.html', ads=ads, search=q, cat=cat)
 
-@app.route('/admin', methods=['GET', 'POST'])
+    q = request.args.get("q", "").strip()
+    category = request.args.get("cat", "").strip()
+
+    sql = "SELECT * FROM ads WHERE 1=1"
+    params = []
+
+    if q:
+        sql += " AND (title LIKE ? OR content LIKE ? OR category LIKE ? OR phone LIKE ?)"
+        params.extend([f"%{q}%"] * 4)
+
+    if category:
+        sql += " AND category = ?"
+        params.append(category)
+
+    sql += " ORDER BY id DESC LIMIT 250"
+
+    with get_db() as conn:
+        ads = conn.execute(sql, params).fetchall()
+
+    return render_template("index.html", ads=ads, search=q, cat=category)
+
+
+@app.route("/admin", methods=["GET", "POST"])
 def admin():
     setup_database()
-    
-    if request.method == 'POST':
-        action = request.form.get('action')
-        if action == 'scrape':
-            count = run_real_scraper()
-            flash(f'تم السحب بنجاح! الإعلانات الجديدة: {count}', 'success')
-        elif action == 'clear':
-            conn = get_db_connection()
-            conn.execute('DELETE FROM ads')
-            conn.commit()
-            conn.close()
-            flash('تم تفريغ قاعدة البيانات', 'warning')
-        return redirect(url_for('admin'))
-    
-    conn = get_db_connection()
-    ads = conn.execute("SELECT * FROM ads ORDER BY id DESC").fetchall()
-    total = len(ads)
-    conn.close()
-    return render_template('admin.html', ads=ads, total=total)
 
-if __name__ == '__main__':
+    if request.method == "POST":
+        action = request.form.get("action")
+
+        if action == "scrape":
+            if scrape_lock.locked():
+                flash("السحب يعمل حالياً، انتظر حتى ينتهي.", "warning")
+            else:
+                threading.Thread(target=run_scraper, daemon=True).start()
+                flash("بدأ السحب في الخلفية. حدّث الصفحة بعد قليل لرؤية النتائج.", "success")
+
+        elif action == "clear":
+            with get_db() as conn:
+                conn.execute("DELETE FROM ads")
+            flash("تم تفريغ قاعدة البيانات.", "warning")
+
+        return redirect(url_for("admin"))
+
+    with get_db() as conn:
+        ads = conn.execute("SELECT * FROM ads ORDER BY id DESC LIMIT 500").fetchall()
+        runs = conn.execute("""
+            SELECT * FROM source_runs ORDER BY id DESC LIMIT 50
+        """).fetchall()
+
+    return render_template(
+        "admin.html",
+        ads=ads,
+        runs=runs,
+        total=len(ads),
+        is_running=scrape_lock.locked()
+    )
+
+
+if __name__ == "__main__":
     setup_database()
-    port = int(os.environ.get("PORT", 5000))
-    print(f"السيرفر شغال: http://127.0.0.1:{port}")
-    app.run(host='0.0.0.0', port=port, debug=True)
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=False)
