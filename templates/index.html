@@ -1,51 +1,358 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
-  <meta charset="utf-8">
-  <title>إعلانات الاستقدام</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>إعلانات استقدام العمالة | اليمنية والمنزلية</title>
   <style>
-    body { font-family: Arial; background:#f5f6f8; margin:0; padding:25px; }
-    form, .ad { background:white; padding:16px; border-radius:10px; margin-bottom:12px; }
-    input, select, button { padding:10px; margin:4px; }
-    .ad h3 { margin-top:0; }
-    .meta { color:#666; font-size:14px; }
-    a { color:#0969da; }
+    :root {
+      --primary: #0f766e;
+      --primary-dark: #0d5f59;
+      --whatsapp: #25d366;
+      --bg: #f1f5f9;
+      --card: #ffffff;
+      --text: #1e293b;
+      --muted: #64748b;
+      --border: #e2e8f0;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: "Segoe UI", Tahoma, "Noto Sans Arabic", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    /* Header */
+    header {
+      background: linear-gradient(135deg, #0f766e, #134e4a);
+      color: white;
+      padding: 28px 30px;
+      border-radius: 18px;
+      margin-bottom: 25px;
+      box-shadow: 0 12px 30px rgba(15, 118, 110, 0.3);
+      text-align: center;
+    }
+
+    header h1 {
+      font-size: 1.9rem;
+      margin-bottom: 8px;
+    }
+
+    header p {
+      opacity: 0.9;
+      font-size: 1rem;
+    }
+
+    /* Search Form */
+    .search-box {
+      background: var(--card);
+      padding: 20px;
+      border-radius: 16px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+      border: 1px solid var(--border);
+      margin-bottom: 25px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .search-box input[type="text"],
+    .search-box select {
+      flex: 1;
+      min-width: 180px;
+      padding: 12px 16px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 1rem;
+      outline: none;
+      transition: border 0.2s;
+    }
+
+    .search-box input:focus,
+    .search-box select:focus {
+      border-color: var(--primary);
+    }
+
+    .search-box button {
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 12px 28px;
+      border-radius: 10px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .search-box button:hover {
+      background: var(--primary-dark);
+    }
+
+    .admin-link {
+      display: inline-block;
+      margin-bottom: 20px;
+      color: var(--primary);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .admin-link:hover {
+      text-decoration: underline;
+    }
+
+    /* Results count */
+    .results-info {
+      margin-bottom: 18px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    /* Ad Cards */
+    .ads-grid {
+      display: grid;
+      gap: 18px;
+    }
+
+    .ad-card {
+      background: var(--card);
+      border-radius: 16px;
+      padding: 22px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.05);
+      border: 1px solid var(--border);
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .ad-card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 10px 25px rgba(0,0,0,0.08);
+    }
+
+    .ad-card h3 {
+      font-size: 1.2rem;
+      margin-bottom: 12px;
+      color: var(--text);
+      line-height: 1.4;
+    }
+
+    .ad-content {
+      color: #334155;
+      font-size: 0.98rem;
+      margin-bottom: 16px;
+      white-space: pre-wrap;
+      max-height: 140px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 16px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+
+    .badge-yemeni   { background: #dbeafe; color: #1e40af; }
+    .badge-home     { background: #ecfdf5; color: #065f46; }
+    .badge-driver   { background: #e0e7ff; color: #3730a3; }
+    .badge-transfer { background: #fce7f3; color: #9d174d; }
+    .badge-general  { background: #f1f5f9; color: #475569; }
+
+    .phone {
+      font-family: monospace;
+      font-weight: 600;
+      direction: ltr;
+      display: inline-block;
+      background: #f8fafc;
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .wa-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      background: var(--whatsapp);
+      color: white;
+      padding: 9px 18px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.95rem;
+      transition: background 0.2s;
+    }
+
+    .wa-btn:hover {
+      background: #1ebe57;
+    }
+
+    .source-link {
+      color: var(--primary);
+      text-decoration: none;
+      font-size: 0.9rem;
+    }
+
+    .source-link:hover {
+      text-decoration: underline;
+    }
+
+    /* Empty state */
+    .empty {
+      text-align: center;
+      padding: 60px 20px;
+      background: var(--card);
+      border-radius: 16px;
+      color: var(--muted);
+      border: 1px dashed var(--border);
+    }
+
+    .empty h3 {
+      margin-bottom: 10px;
+      color: var(--text);
+    }
+
+    footer {
+      text-align: center;
+      margin-top: 40px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 640px) {
+      header h1 { font-size: 1.5rem; }
+      .search-box { flex-direction: column; }
+      .search-box input,
+      .search-box select,
+      .search-box button { width: 100%; }
+    }
   </style>
 </head>
 <body>
-  <h1>إعلانات الاستقدام</h1>
+  <div class="container">
 
-  <form method="get">
-    <input name="q" value="{{ search }}" placeholder="ابحث في الإعلانات">
-    <select name="cat">
-      <option value="">كل التصنيفات</option>
-      <option value="عمالة يمنية" {% if cat == 'عمالة يمنية' %}selected{% endif %}>عمالة يمنية</option>
-      <option value="عمالة منزلية" {% if cat == 'عمالة منزلية' %}selected{% endif %}>عمالة منزلية</option>
-      <option value="سائقين" {% if cat == 'سائقين' %}selected{% endif %}>سائقين</option>
-      <option value="تنازل / نقل كفالة" {% if cat == 'تنازل / نقل كفالة' %}selected{% endif %}>تنازل / نقل كفالة</option>
-    </select>
-    <button type="submit">بحث</button>
-  </form>
+    <header>
+      <h1>إعلانات استقدام العمالة</h1>
+      <p>العمالة اليمنية • المنزلية • السائقين • التنازل ونقل الكفالة</p>
+    </header>
 
-  {% for ad in ads %}
-  <article class="ad">
-    <h3>{{ ad.title }}</h3>
-    <p>{{ ad.content[:800] }}</p>
-    <p class="meta">
-      التصنيف: {{ ad.category }} |
-      المصدر: <a href="{{ ad.ad_url }}" target="_blank" rel="noopener">فتح الإعلان الأصلي</a>
-    </p>
+    <a href="{{ url_for('admin') }}" class="admin-link">← لوحة الإدارة</a>
 
-    {% if ad.phone %}
-      <p>الهاتف: {{ ad.phone[:3] }}******{{ ad.phone[-2:] }}</p>
-    {% endif %}
+    <!-- نموذج البحث -->
+    <form method="get" class="search-box">
+      <input type="text" name="q" value="{{ search or '' }}" placeholder="ابحث بكلمة... (يمني، عاملة، سائق، تنازل...)">
+      
+      <select name="cat">
+        <option value="">كل التصنيفات</option>
+        <option value="عمالة يمنية" {% if cat == 'عمالة يمنية' %}selected{% endif %}>عمالة يمنية</option>
+        <option value="عمالة منزلية" {% if cat == 'عمالة منزلية' %}selected{% endif %}>عمالة منزلية</option>
+        <option value="سائقين" {% if cat == 'سائقين' %}selected{% endif %}>سائقين</option>
+        <option value="تنازل / نقل كفالة" {% if cat == 'تنازل / نقل كفالة' %}selected{% endif %}>تنازل / نقل كفالة</option>
+        <option value="استقدام / مطلوب" {% if cat == 'استقدام / مطلوب' %}selected{% endif %}>استقدام / مطلوب</option>
+        <option value="استقدام عام" {% if cat == 'استقدام عام' %}selected{% endif %}>استقدام عام</option>
+      </select>
 
-    {% if ad.whatsapp_link %}
-      <a href="{{ ad.whatsapp_link }}" target="_blank" rel="noopener">واتساب</a>
-    {% endif %}
-  </article>
-  {% else %}
-    <p>لا توجد إعلانات محفوظة بعد.</p>
-  {% endfor %}
+      <button type="submit">بحث</button>
+    </form>
+
+    <!-- عدد النتائج -->
+    <div class="results-info">
+      {% if ads %}
+        تم العثور على <strong>{{ ads|length }}</strong> إعلان
+        {% if search %} يحتوي على "{{ search }}"{% endif %}
+        {% if cat %} في تصنيف "{{ cat }}"{% endif %}
+      {% endif %}
+    </div>
+
+    <!-- قائمة الإعلانات -->
+    <div class="ads-grid">
+      {% if ads and ads|length > 0 %}
+        {% for ad in ads %}
+        <article class="ad-card">
+          <h3>{{ ad.title }}</h3>
+
+          <div class="ad-content">
+            {{ ad.content[:700] }}{% if ad.content|length > 700 %}...{% endif %}
+          </div>
+
+          <div class="meta">
+            {% if 'يمني' in ad.category %}
+              <span class="badge badge-yemeni">{{ ad.category }}</span>
+            {% elif 'تنازل' in ad.category or 'نقل' in ad.category %}
+              <span class="badge badge-transfer">{{ ad.category }}</span>
+            {% elif 'سائق' in ad.category %}
+              <span class="badge badge-driver">{{ ad.category }}</span>
+            {% elif 'منزلية' in ad.category %}
+              <span class="badge badge-home">{{ ad.category }}</span>
+            {% else %}
+              <span class="badge badge-general">{{ ad.category }}</span>
+            {% endif %}
+
+            <span>المصدر: {{ ad.source_name }}</span>
+          </div>
+
+          <div class="actions">
+            {% if ad.phone %}
+              <span class="phone">{{ ad.phone }}</span>
+            {% endif %}
+
+            {% if ad.whatsapp_link %}
+              <a href="{{ ad.whatsapp_link }}" target="_blank" rel="noopener" class="wa-btn">
+                واتساب
+              </a>
+            {% endif %}
+
+            {% if ad.source_url %}
+              <a href="{{ ad.source_url }}" target="_blank" rel="noopener" class="source-link">
+                المصدر الأصلي
+              </a>
+            {% endif %}
+          </div>
+        </article>
+        {% endfor %}
+      {% else %}
+        <div class="empty">
+          <h3>لا توجد إعلانات حالياً</h3>
+          <p>جرّب تغيير كلمة البحث أو التصنيف، أو اذهب إلى لوحة الإدارة لبدء السحب.</p>
+        </div>
+      {% endif %}
+    </div>
+
+    <footer>
+      نظام عرض إعلانات الاستقدام • مخصص للعمالة اليمنية والمنزلية في السعودية
+    </footer>
+
+  </div>
 </body>
 </html>
