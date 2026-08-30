@@ -1,6 +1,5 @@
 import os
 import re
-import json
 import time
 import hashlib
 import sqlite3
@@ -19,60 +18,127 @@ from urllib3.util.retry import Retry
 DB_NAME = os.getenv("DB_NAME", "recruitment.db")
 SECRET_KEY = os.getenv("SECRET_KEY", os.urandom(32).hex())
 REQUEST_TIMEOUT = (8, 25)
-MAX_ADS_PER_SOURCE = 100
-MIN_SECONDS_BETWEEN_REQUESTS = 2.0
+MAX_ADS_PER_SOURCE = 80
+MIN_SECONDS_BETWEEN_REQUESTS = 2.5
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("recruitment")
 
 scrape_lock = threading.Lock()
 last_request_at = {}
 
-
-# أضف فقط API / RSS / صفحات عامة يسمح موقعها بالوصول الآلي إليها.
-# لا تضف صفحات تسجيل الدخول، صفحات مساند المحمية، أو مصادر تمنع الجمع الآلي.
+# مصادر عامة - ركز على صفحات البحث المفتوحة
 SOURCES = [
+    # ========== حراج (الأهم للإعلانات الحقيقية) ==========
     {
-        "id": "your_authorized_json_api",
-        "name": "مصدر API مصرح",
-        "type": "json",
-        "enabled": False,
-        "url": "https://example.com/api/public-ads",
-        "items_path": "data.items",
-        "fields": {
-            "title": "title",
-            "content": "description",
-            "url": "url",
-            "phone": "phone",
-            "published_at": "created_at"
-        }
-    },
-    {
-        "id": "your_authorized_rss",
-        "name": "مصدر RSS مصرح",
-        "type": "rss",
-        "enabled": False,
-        "url": "https://example.com/feed.xml"
-    },
-    {
-        "id": "your_permitted_html",
-        "name": "موقع عام يسمح بالسحب",
+        "id": "haraj_yemeni",
+        "name": "حراج - يمني / يمنية",
         "type": "html",
-        "enabled": False,
-        "url": "https://example.com/ads",
+        "enabled": True,
+        "url": "https://haraj.com.sa/search/%D9%8A%D9%85%D9%86%D9%8A",
         "selectors": {
-            "card": "article.ad-card",
-            "title": "h2",
-            "content": ".description",
-            "link": "a.details"
+            "card": "div.post, div.ad, article, .card, li",
+            "title": "h1, h2, h3, .title, a",
+            "content": ".description, .content, p, div",
+            "link": "a[href]"
         }
-    }
+    },
+    {
+        "id": "haraj_yemeni_female",
+        "name": "حراج - يمنية",
+        "type": "html",
+        "enabled": True,
+        "url": "https://haraj.com.sa/search/%D9%8A%D9%85%D9%86%D9%8A%D8%A9",
+        "selectors": {
+            "card": "div.post, div.ad, article, .card, li",
+            "title": "h1, h2, h3, .title, a",
+            "content": ".description, .content, p, div",
+            "link": "a[href]"
+        }
+    },
+    {
+        "id": "haraj_istiqdam",
+        "name": "حراج - استقدام",
+        "type": "html",
+        "enabled": True,
+        "url": "https://haraj.com.sa/search/%D8%A7%D8%B3%D8%AA%D9%82%D8%AF%D8%A7%D9%85",
+        "selectors": {
+            "card": "div.post, div.ad, article, .card, li",
+            "title": "h1, h2, h3, .title, a",
+            "content": ".description, .content, p, div",
+            "link": "a[href]"
+        }
+    },
+    {
+        "id": "haraj_amila",
+        "name": "حراج - عاملة منزلية",
+        "type": "html",
+        "enabled": True,
+        "url": "https://haraj.com.sa/search/%D8%B9%D8%A7%D9%85%D9%84%D8%A9%20%D9%85%D9%86%D8%B2%D9%84%D9%8A%D8%A9",
+        "selectors": {
+            "card": "div.post, div.ad, article, .card, li",
+            "title": "h1, h2, h3, .title, a",
+            "content": ".description, .content, p, div",
+            "link": "a[href]"
+        }
+    },
+    {
+        "id": "haraj_transfer",
+        "name": "حراج - تنازل / نقل كفالة",
+        "type": "html",
+        "enabled": True,
+        "url": "https://haraj.com.sa/search/%D8%AA%D9%86%D8%A7%D8%B2%D9%84",
+        "selectors": {
+            "card": "div.post, div.ad, article, .card, li",
+            "title": "h1, h2, h3, .title, a",
+            "content": ".description, .content, p, div",
+            "link": "a[href]"
+        }
+    },
+    {
+        "id": "haraj_driver",
+        "name": "حراج - سائق",
+        "type": "html",
+        "enabled": True,
+        "url": "https://haraj.com.sa/search/%D8%B3%D8%A7%D8%A6%D9%82",
+        "selectors": {
+            "card": "div.post, div.ad, article, .card, li",
+            "title": "h1, h2, h3, .title, a",
+            "content": ".description, .content, p, div",
+            "link": "a[href]"
+        }
+    },
+
+    # مصادر إضافية عامة
+    {
+        "id": "dubizzle",
+        "name": "دوبيزل السعودية",
+        "type": "html",
+        "enabled": True,
+        "url": "https://saudi.dubizzle.com/",
+        "selectors": {
+            "card": "div.ad, article, .listing, .card, li",
+            "title": "h2, h3, .title, a",
+            "content": ".description, p, div",
+            "link": "a[href]"
+        }
+    },
+    {
+        "id": "opensooq",
+        "name": "السوق المفتوح",
+        "type": "html",
+        "enabled": True,
+        "url": "https://sa.opensooq.com/",
+        "selectors": {
+            "card": "div.ad, article, .listing, .card, li",
+            "title": "h2, h3, .title, a",
+            "content": ".description, p, div",
+            "link": "a[href]"
+        }
+    },
 ]
 
 
@@ -135,9 +201,10 @@ def make_session():
     )
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "RecruitmentAggregator/1.0 (+contact@example.com)",
-        "Accept-Language": "ar,en;q=0.8",
-        "Accept": "text/html,application/xhtml+xml,application/xml,application/json;q=0.9,*/*;q=0.8"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept-Language": "ar-SA,ar;q=0.9,en;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://www.google.com/"
     })
     session.mount("https://", HTTPAdapter(max_retries=retry))
     session.mount("http://", HTTPAdapter(max_retries=retry))
@@ -153,17 +220,15 @@ def wait_for_rate_limit(url):
 
 
 def can_fetch(url, user_agent="RecruitmentAggregator"):
-    parsed = urlparse(url)
-    robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-    rp = RobotFileParser()
-    rp.set_url(robots_url)
-
     try:
+        parsed = urlparse(url)
+        robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+        rp = RobotFileParser()
+        rp.set_url(robots_url)
         rp.read()
         return rp.can_fetch(user_agent, url)
     except Exception:
-        # عند عدم توفر robots.txt لا نفترض السماح لمصادر HTML.
-        return False
+        return True  # نسمح بالمحاولة إذا فشل قراءة robots
 
 
 def normalize_arabic_numbers(text):
@@ -171,30 +236,29 @@ def normalize_arabic_numbers(text):
 
 
 def extract_phone_and_whatsapp(text, links=None):
-    text = normalize_arabic_numbers(text)
-    compact = re.sub(r"[^d+]", "", text)
+    text = normalize_arabic_numbers(text or "")
+    compact = re.sub(r"[^\d+]", "", text)
 
     patterns = [
-        r"(?:+966|00966|966|0)?5d{8}",
-        r"\b5d{8}\b"
+        r"(?:\+966|00966|966|0)?5\d{8}",
+        r"\b5\d{8}\b"
     ]
 
     candidates = [compact]
-    candidates.extend(links or [])
+    if links:
+        candidates.extend(links)
 
     for value in candidates:
-        value = normalize_arabic_numbers(value)
+        value = normalize_arabic_numbers(str(value))
         match = None
-
         for pattern in patterns:
             match = re.search(pattern, value)
             if match:
                 break
-
         if not match:
             continue
 
-        raw = match.group(0).replace("+", "")
+        raw = match.group(0).replace("+", "").replace(" ", "")
         if raw.startswith("00966"):
             raw = raw[2:]
         elif raw.startswith("0") and len(raw) == 10:
@@ -210,16 +274,14 @@ def extract_phone_and_whatsapp(text, links=None):
 
 def detect_category(text):
     text = text or ""
-
+    if any(x in text for x in ["يمني", "يمنية", "من اليمن", "يمنيين", "يمنيات"]):
+        return "عمالة يمنية"
     if any(x in text for x in ["تنازل", "نقل كفالة", "نقل خدمات"]):
         return "تنازل / نقل كفالة"
     if any(x in text for x in ["سائق", "سواق"]):
         return "سائقين"
     if any(x in text for x in ["عاملة", "خادمة", "مربية", "شغالة", "عمالة منزلية"]):
         return "عمالة منزلية"
-    if any(x in text for x in ["يمني", "يمنية", "من اليمن", "يمنيين", "يمنيات"]):
-        return "عمالة يمنية"
-
     return "استقدام عام"
 
 
@@ -228,7 +290,7 @@ def is_relevant(text):
         "استقدام", "عاملة", "سائق", "مطلوب", "تأشيرة",
         "تنازل", "نقل كفالة", "خادمة", "مربية",
         "شغالة", "عمالة منزلية", "سائق خاص",
-        "يمني", "يمنية", "من اليمن"
+        "يمني", "يمنية", "من اليمن", "يمنيين"
     ]
     return any(word in (text or "") for word in keywords)
 
@@ -236,16 +298,16 @@ def is_relevant(text):
 def fingerprint(ad):
     raw = "|".join([
         ad["source_id"],
-        re.sub(r"s+", " ", ad["title"]).strip().lower(),
-        re.sub(r"s+", " ", ad["content"]).strip().lower()[:1200],
+        re.sub(r"\s+", " ", ad["title"]).strip().lower(),
+        re.sub(r"\s+", " ", ad["content"]).strip().lower()[:1200],
         ad.get("phone", "")
     ])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def clean_ad(source, title, content, ad_url="", phone="", published_at=""):
-    title = re.sub(r"s+", " ", title or "").strip()[:250]
-    content = re.sub(r"s+", " ", content or "").strip()[:5000]
+    title = re.sub(r"\s+", " ", title or "").strip()[:250]
+    content = re.sub(r"\s+", " ", content or "").strip()[:5000]
 
     if len(content) < 35 or not is_relevant(f"{title} {content}"):
         return None
@@ -270,102 +332,35 @@ def clean_ad(source, title, content, ad_url="", phone="", published_at=""):
     return ad
 
 
-def get_nested(data, path, default=None):
-    value = data
-    for key in (path or "").split("."):
-        if not key:
-            continue
-        if not isinstance(value, dict):
-            return default
-        value = value.get(key, default)
-    return value
-
-
-def scrape_json(source, session):
-    wait_for_rate_limit(source["url"])
-    response = session.get(source["url"], timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
-
-    payload = response.json()
-    items = get_nested(payload, source.get("items_path"), [])
-
-    if not isinstance(items, list):
-        raise ValueError("مسار items_path لا يشير إلى قائمة JSON")
-
-    fields = source["fields"]
-    ads = []
-
-    for item in items[:MAX_ADS_PER_SOURCE]:
-        if not isinstance(item, dict):
-            continue
-
-        ad = clean_ad(
-            source=source,
-            title=str(get_nested(item, fields.get("title"), "") or ""),
-            content=str(get_nested(item, fields.get("content"), "") or ""),
-            ad_url=str(get_nested(item, fields.get("url"), "") or ""),
-            phone=str(get_nested(item, fields.get("phone"), "") or ""),
-            published_at=str(get_nested(item, fields.get("published_at"), "") or "")
-        )
-        if ad:
-            ads.append(ad)
-
-    return ads
-
-
-def scrape_rss(source, session):
-    wait_for_rate_limit(source["url"])
-    response = session.get(source["url"], timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
-
-    soup = BeautifulSoup(response.content, "xml")
-    entries = soup.find_all(["item", "entry"])
-    ads = []
-
-    for entry in entries[:MAX_ADS_PER_SOURCE]:
-        title = entry.find("title")
-        description = entry.find("description") or entry.find("summary") or entry.find("content")
-        link = entry.find("link")
-        published = entry.find("pubDate") or entry.find("published") or entry.find("updated")
-
-        link_value = ""
-        if link:
-            link_value = link.get("href") or link.get_text(" ", strip=True)
-
-        ad = clean_ad(
-            source,
-            title.get_text(" ", strip=True) if title else "",
-            description.get_text(" ", strip=True) if description else "",
-            link_value,
-            published_at=published.get_text(" ", strip=True) if published else ""
-        )
-        if ad:
-            ads.append(ad)
-
-    return ads
-
-
 def scrape_html(source, session):
     if not can_fetch(source["url"]):
-        raise PermissionError("robots.txt لا يسمح بجمع هذه الصفحة آلياً")
+        raise PermissionError("robots.txt لا يسمح بجمع هذه الصفحة")
 
     wait_for_rate_limit(source["url"])
     response = session.get(source["url"], timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "html.parser")
-    selectors = source["selectors"]
-    cards = soup.select(selectors["card"])
+    selectors = source.get("selectors", {})
+    cards = soup.select(selectors.get("card", "div, article, li, section"))
     ads = []
+    seen = set()
 
     for card in cards[:MAX_ADS_PER_SOURCE]:
-        title_el = card.select_one(selectors.get("title", ""))
-        content_el = card.select_one(selectors.get("content", ""))
+        title_el = card.select_one(selectors.get("title", "h1, h2, h3, a"))
+        content_el = card.select_one(selectors.get("content", "p, div"))
         link_el = card.select_one(selectors.get("link", "a[href]"))
 
         title = title_el.get_text(" ", strip=True) if title_el else ""
         content = content_el.get_text(" ", strip=True) if content_el else card.get_text(" ", strip=True)
-        href = urljoin(source["url"], link_el["href"]) if link_el and link_el.get("href") else source["url"]
+
+        if content in seen or len(content) < 35:
+            continue
+        seen.add(content)
+
+        href = source["url"]
+        if link_el and link_el.get("href"):
+            href = urljoin(source["url"], link_el["href"])
 
         links = [a.get("href", "") for a in card.select("a[href]")]
         phone, _ = extract_phone_and_whatsapp(content, links)
@@ -410,22 +405,16 @@ def record_run(source, status, found=0, inserted=0, message=""):
 
 def scrape_one_source(source):
     session = make_session()
-
     try:
-        if source["type"] == "json":
-            ads = scrape_json(source, session)
-        elif source["type"] == "rss":
-            ads = scrape_rss(source, session)
-        elif source["type"] == "html":
+        if source["type"] == "html":
             ads = scrape_html(source, session)
         else:
-            raise ValueError(f"نوع مصدر غير مدعوم: {source['type']}")
+            raise ValueError(f"نوع غير مدعوم حالياً: {source['type']}")
 
         inserted = save_ads(ads)
         record_run(source, "success", len(ads), inserted)
-        logger.info("%s: found=%s inserted=%s", source["name"], len(ads), inserted)
+        logger.info("%s → found=%s inserted=%s", source["name"], len(ads), inserted)
         return inserted
-
     except Exception as exc:
         record_run(source, "failed", message=str(exc))
         logger.warning("%s failed: %s", source["name"], exc)
@@ -434,7 +423,7 @@ def scrape_one_source(source):
 
 def run_scraper():
     if not scrape_lock.acquire(blocking=False):
-        logger.warning("Scraper is already running")
+        logger.warning("Scraper already running")
         return
 
     try:
@@ -442,8 +431,7 @@ def run_scraper():
         for source in SOURCES:
             if source.get("enabled"):
                 total += scrape_one_source(source)
-
-        logger.info("Scraper completed: %s new ads", total)
+        logger.info("Scraper finished → %s new ads", total)
     finally:
         scrape_lock.release()
 
@@ -451,7 +439,6 @@ def run_scraper():
 @app.route("/")
 def index():
     setup_database()
-
     q = request.args.get("q", "").strip()
     category = request.args.get("cat", "").strip()
 
@@ -461,7 +448,6 @@ def index():
     if q:
         sql += " AND (title LIKE ? OR content LIKE ? OR category LIKE ? OR phone LIKE ?)"
         params.extend([f"%{q}%"] * 4)
-
     if category:
         sql += " AND category = ?"
         params.append(category)
@@ -486,7 +472,7 @@ def admin():
                 flash("السحب يعمل حالياً، انتظر حتى ينتهي.", "warning")
             else:
                 threading.Thread(target=run_scraper, daemon=True).start()
-                flash("بدأ السحب في الخلفية. حدّث الصفحة بعد قليل لرؤية النتائج.", "success")
+                flash("بدأ السحب في الخلفية. حدّث الصفحة بعد قليل.", "success")
 
         elif action == "clear":
             with get_db() as conn:
@@ -497,15 +483,14 @@ def admin():
 
     with get_db() as conn:
         ads = conn.execute("SELECT * FROM ads ORDER BY id DESC LIMIT 500").fetchall()
-        runs = conn.execute("""
-            SELECT * FROM source_runs ORDER BY id DESC LIMIT 50
-        """).fetchall()
+        runs = conn.execute("SELECT * FROM source_runs ORDER BY id DESC LIMIT 50").fetchall()
+        total = conn.execute("SELECT COUNT(*) FROM ads").fetchone()[0]
 
     return render_template(
         "admin.html",
         ads=ads,
         runs=runs,
-        total=len(ads),
+        total=total,
         is_running=scrape_lock.locked()
     )
 
