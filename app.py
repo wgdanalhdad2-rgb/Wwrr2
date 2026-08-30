@@ -6,6 +6,7 @@ import hashlib
 import logging
 import requests
 from bs4 import BeautifulSoup
+from flask import Flask, jsonify
 
 # إعداد نظام التسجيل (Logging)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -97,7 +98,6 @@ class AdRepository:
         try:
             with self.get_db_connection() as conn:
                 cursor = conn.cursor()
-                # إزالة المصادر غير ال válida إذا وجدت
                 cursor.execute("DELETE FROM ad_sources WHERE url LIKE '%raw.githubusercontent.com%'")
                 conn.commit()
 
@@ -247,7 +247,6 @@ class AdRepository:
             response = requests.get(url, headers=headers, timeout=8, verify=False)
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # إزالة العناصر غير المهمة
             for element in soup(["script", "style", "nav", "footer", "header", "aside"]):
                 element.decompose()
 
@@ -415,7 +414,6 @@ class AdRepository:
                         ads_count += 1
                         ads_from_source_count += 1
 
-                # حفظ سجل المزامنة
                 with self.get_db_connection() as conn:
                     conn.execute("""
                         INSERT INTO sync_logs (sourceName, sourceUrl, status, adsFoundCount, message)
@@ -464,3 +462,26 @@ class AdRepository:
                 logger.error(f"Error calling model {model}: {e}")
         return None
 
+
+# ==========================================
+# إعدادات تطبيق الـ Flask (المطلوبة لـ Gunicorn)
+# ==========================================
+app = Flask(__name__)
+repo = AdRepository()
+
+@app.route('/')
+def home():
+    repo.initialize_default_sources()
+    return jsonify({
+        "status": "online",
+        "agency": "وكالة الناقل للتوفر والاستقدام",
+        "message": "النظام يعمل بكفاءة وجاهز للمزامنة 🚀"
+    })
+
+@app.route('/sync', methods=['GET', 'POST'])
+def run_sync_route():
+    result = repo.run_sync("ALL")
+    return str(result)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
